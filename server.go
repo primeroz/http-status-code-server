@@ -1,7 +1,6 @@
 /*
  */
 
-// A webserver that only serves a 404 page. Used as a default backend.
 package main
 
 import (
@@ -30,7 +29,7 @@ const jsonContentType = "application/json; encoding=utf-8"
 
 func main() {
 	// command line arguments
-	port := flag.Int("port", 8080, "Port number to serve default backend 404 page.")
+	port := flag.Int("port", 8080, "Port number to serve on.")
 	timeout := flag.Duration("timeout", 5*time.Second, "Time in seconds to wait before forcefully terminating the server.")
 
 	flag.Parse()
