@@ -1,32 +1,32 @@
 /*
-Copyright 2017 The Kubernetes Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ */
 
 // A webserver that only serves a 404 page. Used as a default backend.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
+
+var acceptedMediaTypes = []string{
+	"image/webp",
+	"image/svg+xml",
+	"image/jpeg",
+	"image/png",
+	"image/",
+}
+
+const jsonContentType = "application/json; encoding=utf-8"
 
 func main() {
 	// command line arguments
@@ -35,18 +35,18 @@ func main() {
 
 	flag.Parse()
 
-	notFound := newHTTPServer(fmt.Sprintf(":%d", *port), notFound())
+	statusServer := newHTTPServer(fmt.Sprintf(":%d", *port), statusHandler())
 
 	// start the main http server
 	go func() {
-		err := notFound.ListenAndServe()
+		err := statusServer.ListenAndServe()
 		if err != http.ErrServerClosed {
 			fmt.Fprintf(os.Stderr, "could not start http server: %s\n", err)
 			os.Exit(1)
 		}
 	}()
 
-	waitShutdown(notFound, *timeout)
+	waitShutdown(statusServer, *timeout)
 }
 
 type server struct {
@@ -68,18 +68,116 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	}
 }
 
-func notFound(options ...func(*server)) *server {
+// Mostly a copy of https://github.com/mccutchen/go-httpbin/blob/dfdd248a96298dec09ec3fcd90b6254ceed6dafd/httpbin/handlers.go#L148
+func status(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) != 3 {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+	code, err := strconv.Atoi(parts[2])
+	if err != nil {
+		http.Error(w, "Invalid status", http.StatusBadRequest)
+		return
+	}
+
+	type statusCase struct {
+		headers map[string]string
+		body    []byte
+	}
+
+	redirectHeaders := &statusCase{
+		headers: map[string]string{
+			"Location": "/redirect/1",
+		},
+	}
+
+	notAcceptableBody, _ := json.Marshal(map[string]interface{}{
+		"message": "Client did not request a supported media type",
+		"accept":  acceptedMediaTypes,
+	})
+
+	specialCases := map[int]*statusCase{
+		301: redirectHeaders,
+		302: redirectHeaders,
+		303: redirectHeaders,
+		305: redirectHeaders,
+		307: redirectHeaders,
+		401: {
+			headers: map[string]string{
+				"WWW-Authenticate": `Basic realm="Fake Realm"`,
+			},
+		},
+		402: {
+			body: []byte("pay me!"),
+			headers: map[string]string{
+				"X-More-Info": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/402",
+			},
+		},
+		403: {
+			body: []byte("Access Forbidden"),
+		},
+		406: {
+			body: notAcceptableBody,
+			headers: map[string]string{
+				"Content-Type": jsonContentType,
+			},
+		},
+		407: {
+			headers: map[string]string{
+				"Proxy-Authenticate": `Basic realm="Fake Realm"`,
+			},
+		},
+		418: {
+			body: []byte("I'm a teapot!"),
+			headers: map[string]string{
+				"X-More-Info": "http://tools.ietf.org/html/rfc2324",
+			},
+		},
+	}
+
+	if specialCase, ok := specialCases[code]; ok {
+		if specialCase.headers != nil {
+			for key, val := range specialCase.headers {
+				w.Header().Set(key, val)
+			}
+		}
+		w.WriteHeader(code)
+		if specialCase.body != nil {
+			w.Write(specialCase.body)
+		}
+	} else {
+		w.WriteHeader(code)
+	}
+}
+
+func statusHandler(options ...func(*server)) *server {
 	s := &server{mux: http.NewServeMux()}
-	// TODO: this handler exists only to avoid breaking existing deployments
-	// Change url to make it easier to expose wrong ingresses that might be externally tested with /healthz
-	s.mux.HandleFunc("/healthcheck", func(w http.ResponseWriter, r *http.Request) {
+
+	// Handle Healthz and Readiness Endpoint
+	s.mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "ok")
 	})
+	s.mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "ok")
+	})
+
+	// Status Handling
+	s.mux.HandleFunc("/status/", status)
+
+	s.mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, "Not Found - 404")
+	})
+
+	// Default handling
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		fmt.Fprint(w, "default backend - 404")
+		fmt.Fprint(w, "Not Found - 404")
 	})
+
 	return s
 }
 
