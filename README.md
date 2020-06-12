@@ -1,8 +1,6 @@
-# 404-server
+# HTTP Status Code Server
 
-`Copy of https://github.com/kubernetes/ingress-gce/tree/master/cmd/404-server`
+simple webserver to return requested status code
 
-404-server is a simple webserver that satisfies the ingress, which means it has to do two things:
-
-Serves a 404 page at /
-Serves a 200 at /healthcheck
+Serves a 200 at /healtz and /readyz
+Serves the requested status code at /status/XXX
